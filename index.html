@@ -1,122 +1,234 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-	<title>Caminatas</title>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<style>
-		#map {
-			height: 400px;
-		}
-	</style>
+  <meta charset="UTF-8" />
+  <title>Caminatas</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 0; padding: 16px; }
+    #map { height: 420px; border-radius: 12px; }
+    .controls { margin: 12px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+    button { padding: 8px 12px; border: 0; border-radius: 8px; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    hr { margin: 16px 0; }
+    li { margin: 6px 0; }
+    .meta { color:#555; font-size: 0.9em; margin-left: 4px; }
+  </style>
 </head>
 <body>
-	<h1>Mis Caminatas</h1>
-	<div id="map"></div>
-	<br>
-	<button onclick="startTracking()">Comenzar</button>
-	<button onclick="stopTracking()">Detener</button>
-	<button onclick="saveRoute()">Guardar</button>
-	<hr>
-	<h2>Mis rutas</h2>
-	<ul id="routes">
-		<!-- Aquí se mostrarán las rutas guardadas -->
-	</ul>
-	<script>
-		var map, track, markers = [];
-		var routes = [];
+  <h1>Mis Caminatas</h1>
+  <div id="map"></div>
 
-		function initMap() {
-			map = new google.maps.Map(document.getElementById('map'), {
-				center: {lat: -34.603722, lng: -58.381592},
-				zoom: 15
-			});
-		}
+  <div class="controls">
+    <button id="btnStart"  onclick="startTracking()">Comenzar</button>
+    <button id="btnStop"   onclick="stopTracking()" disabled>Detener</button>
+    <button id="btnSave"   onclick="saveRoute()" disabled>Guardar</button>
+    <button id="btnClear"  onclick="clearCurrent()" disabled>Limpiar actual</button>
+  </div>
 
-		function startTracking() {
-			if (navigator.geolocation) {
-				track = navigator.geolocation.watchPosition(
-					function(position) {
-						var marker = new google.maps.Marker({
-							position: {lat: position.coords.latitude, lng: position.coords.longitude},
-							map: map
-						});
-						markers.push(marker);
-					},
-					function(error) {
-						console.error(error);
-					}
-				);
-			}
-			else {
-				alert("Tu navegador no soporta el API de geolocalización.");
-			}
-		}
+  <hr />
+  <h2>Mis rutas</h2>
+  <ul id="routes"></ul>
 
-		function stopTracking() {
-			navigator.geolocation.clearWatch(track);
-			markers.forEach(function(marker) {
-				marker.setMap(null);
-			});
-			markers = [];
-		}
+  <script>
+    let map;
+    let watchId = null;
+    let currentPath = [];           // [{lat, lng, t, acc}]
+    let currentPolyline = null;
+    let currentMarker = null;
+    let drawnPolyline = null;       // para visualizar rutas guardadas
+    let routes = [];                // [{id, name, createdAt, distanceMeters, path:[{lat,lng,t,acc}]}]
 
-		function saveRoute() {
-			var path = [];
-			markers.forEach(function(marker) {
-				path.push(marker.getPosition());
-			});
-			var route = {path: path};
-			routes.push(route);
-			saveToLocalStorage(routes);
-			markers = [];
-			stopTracking();
-			showRoutes();
-			alert("Ruta guardada.");
-		}
+    function initMap() {
+      map = new google.maps.Map(document.getElementById('map'), {
+        center: { lat: 40.4168, lng: -3.7038 }, // Madrid por defecto
+        zoom: 14,
+        mapTypeControl: false
+      });
 
-		function showRoutes() {
-			var list = document.getElementById('routes');
-			list.innerHTML = '';
-			routes = loadFromLocalStorage();
-			routes.forEach(function(route, index) {
-				var item = document.createElement('li');
-				item.innerHTML = '<a href="#" onclick="showRoute(' + index + ')">Ruta ' + (index+1) + '</a>';
-				list.appendChild(item);
-			});
-		}
+      routes = loadFromLocalStorage();
+      renderRouteList();
+      updateButtons();
+    }
 
-		function showRoute(index) {
-			var route = routes[index];
-			var path = route.path;
-			var bounds = new google.maps.LatLngBounds();
-			path.forEach(function(latLng) {
-				bounds.extend(latLng);
-			});
-			map.fitBounds(bounds);
-			var line = new google.maps.Polyline({
-				path: path,
-				geodesic: true,
-				strokeColor: '#FF0000',
-				strokeOpacity: 1.0,
-				strokeWeight: 2
-			});
-			line.setMap(map);
-			alert("Ruta " + (index+1) + " mostrada.");
-		}
+    function startTracking() {
+      if (!('geolocation' in navigator)) {
+        alert('Tu navegador no soporta geolocalización.');
+        return;
+      }
+      if (watchId !== null) return; // ya está corriendo
 
-		function saveToLocalStorage(routes) {
-			localStorage.setItem('routes', JSON.stringify(routes));
-		}
+      // Prepara la polilínea y el marcador actual
+      currentPath = [];
+      if (currentPolyline) currentPolyline.setMap(null);
+      currentPolyline = new google.maps.Polyline({
+        path: [],
+        geodesic: true,
+        strokeColor: '#FF0000',
+        strokeOpacity: 1.0,
+        strokeWeight: 3,
+        map
+      });
+      if (!currentMarker) {
+        currentMarker = new google.maps.Marker({ map, title: 'Mi posición' });
+      }
 
-		function loadFromLocalStorage() {
-			var routes = JSON.parse(localStorage.getItem('routes'));
-			if (routes === null) {
-				routes = [];
-			}
-			return routes;
-		}
-	</script>
-	<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBq30NO3Wr-2MySK26-3Sh8WQdjbFUjX34&callback=initMap" async defer></script>
+      watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, {
+        enableHighAccuracy: true,    // más preciso, más batería
+        maximumAge: 10_000,          // permite caché de 10 s
+        timeout: 20_000              // da hasta 20 s para cada fix
+      });
+
+      updateButtons();
+    }
+
+    function onPosition(pos) {
+      const { latitude, longitude, accuracy } = pos.coords;
+      const p = { lat: latitude, lng: longitude, t: Date.now(), acc: accuracy };
+
+      // Si es el primer punto, centra
+      if (currentPath.length === 0) {
+        map.setCenter({ lat: p.lat, lng: p.lng });
+      }
+
+      currentPath.push(p);
+      currentPolyline.getPath().push(new google.maps.LatLng(p.lat, p.lng));
+      currentMarker.setPosition({ lat: p.lat, lng: p.lng });
+
+      // Habilita Guardar si hay al menos 2 puntos
+      if (currentPath.length >= 2) {
+        document.getElementById('btnSave').disabled = false;
+      }
+      document.getElementById('btnClear').disabled = false;
+    }
+
+    function onGeoError(err) {
+      console.error('Geolocation error:', err);
+      alert('No se pudo obtener la posición (' + err.message + '). Revisa permisos/GPS.');
+    }
+
+    function stopTracking() {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+      updateButtons();
+    }
+
+    function clearCurrent() {
+      stopTracking();
+      currentPath = [];
+      if (currentPolyline) { currentPolyline.setMap(null); currentPolyline = null; }
+      if (currentMarker)   { currentMarker.setMap(null); currentMarker = null; }
+      document.getElementById('btnSave').disabled = true;
+      document.getElementById('btnClear').disabled = true;
+    }
+
+    function saveRoute() {
+      if (currentPath.length < 2) {
+        alert('Necesitas al menos dos puntos para guardar una ruta.');
+        return;
+      }
+
+      // Calcula distancia (m)
+      const llArray = currentPath.map(p => new google.maps.LatLng(p.lat, p.lng));
+      const distanceMeters = google.maps.geometry.spherical.computeLength(llArray);
+
+      const route = {
+        id: Date.now(),
+        name: `Ruta ${routes.length + 1}`,
+        createdAt: new Date().toISOString(),
+        distanceMeters,
+        path: currentPath
+      };
+
+      routes.push(route);
+      saveToLocalStorage(routes);
+      renderRouteList();
+
+      alert('Ruta guardada.');
+      clearCurrent();
+    }
+
+    function renderRouteList() {
+      const list = document.getElementById('routes');
+      list.innerHTML = '';
+
+      if (!routes.length) {
+        const li = document.createElement('li');
+        li.textContent = 'No tienes rutas guardadas aún.';
+        list.appendChild(li);
+        return;
+      }
+
+      routes.forEach((r) => {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        a.href = '#';
+        a.textContent = r.name;
+        a.onclick = () => { showRoute(r.id); };
+
+        const km = (r.distanceMeters / 1000).toFixed(2);
+        const when = new Date(r.createdAt).toLocaleString();
+
+        const meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = ` · ${km} km · ${when}`;
+
+        li.appendChild(a);
+        li.appendChild(meta);
+        list.appendChild(li);
+      });
+    }
+
+    function showRoute(id) {
+      const r = routes.find(x => x.id === id);
+      if (!r || !r.path?.length) return;
+
+      // Limpia una polilínea anterior de visualización
+      if (drawnPolyline) drawnPolyline.setMap(null);
+
+      drawnPolyline = new google.maps.Polyline({
+        path: r.path.map(p => ({ lat: p.lat, lng: p.lng })),
+        geodesic: true,
+        strokeColor: '#0371B3',
+        strokeOpacity: 1.0,
+        strokeWeight: 3,
+        map
+      });
+
+      // Ajusta la vista
+      const bounds = new google.maps.LatLngBounds();
+      r.path.forEach(p => bounds.extend(new google.maps.LatLng(p.lat, p.lng)));
+      if (!bounds.isEmpty()) {
+        map.fitBounds(bounds);
+      } else {
+        map.setCenter(r.path[0]);
+        map.setZoom(16);
+      }
+    }
+
+    function saveToLocalStorage(data) {
+      localStorage.setItem('routes', JSON.stringify(data));
+    }
+
+    function loadFromLocalStorage() {
+      try {
+        const raw = localStorage.getItem('routes');
+        return raw ? JSON.parse(raw) : [];
+      } catch (e) {
+        console.error('Error leyendo localStorage:', e);
+        return [];
+      }
+    }
+
+    function updateButtons() {
+      document.getElementById('btnStart').disabled = (watchId !== null);
+      document.getElementById('btnStop').disabled  = (watchId === null);
+    }
+  </script>
+
+  <!-- IMPORTANTE: añade &libraries=geometry para calcular distancias -->
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBq30NO3Wr-2MySK26-3Sh8WQdjbFUjX34&libraries=geometry&callback=initMap" async defer></script>
 </body>
 </html>
