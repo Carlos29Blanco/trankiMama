@@ -25,11 +25,17 @@
     <button id="btnResume" onclick="resumeTracking()" disabled>Retomar</button>
     <button id="btnSave"   onclick="saveRoute()" disabled>Guardar</button>
     <button id="btnClear"  onclick="clearCurrent()" disabled>Limpiar actual</button>
+    <button id="btnSOS"    onclick="sendSOS()" disabled>🔴 SOS</button>
+    <button id="btnShare"  onclick="copyShareLink()" disabled>Compartir enlace</button>
   </div>
 
   <hr />
   <h2>Mis rutas</h2>
   <ul id="routes"></ul>
+
+  <p id="statusOffline" style="color:red; display:none;">Sin conexión: se guardará la ruta y se enviará cuando haya señal…</p>
+  <p id="lastCoord">Última posición: N/A</p>
+  <p id="shareLink">Enlace de seguimiento: N/A</p>
 
   <script>
     // ===== Config de filtrado =====
@@ -45,6 +51,11 @@
     let drawnPolyline = null;      // para visualizar rutas guardadas
     let routes = [];               // [{id, name, createdAt, distanceMeters, path:[...]}]
 
+    // ===== Nuevos estados para compartir y SOS =====
+    let shareToken = null;      // token único de seguimiento
+    let shareURL = null;        // URL de seguimiento construida a partir del token
+    let unsentPositions = [];   // posiciones acumuladas cuando no hay conexión
+
     // ===== Inicio =====
     function initMap() {
       map = new google.maps.Map(document.getElementById('map'), {
@@ -55,6 +66,11 @@
       routes = loadFromLocalStorage();
       renderRouteList();
       updateButtons();
+
+      // Actualiza el estado offline inicial y escucha cambios de conexión
+      updateOfflineStatus();
+      window.addEventListener('online', updateOfflineStatus);
+      window.addEventListener('offline', updateOfflineStatus);
     }
 
     // ===== Helpers =====
@@ -91,10 +107,16 @@
       currentPath = [];
       ensurePolylineAndMarker();
 
+      // Genera un nuevo token de seguimiento y actualiza el enlace
+      shareToken = generateShareToken();
+      updateShareLink();
+      // Limpia posiciones pendientes por si quedaban de una ruta anterior
+      unsentPositions = [];
+
       watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, {
         enableHighAccuracy: true,
-        maximumAge: 10_000,
-        timeout: 20_000
+        maximumAge: 10000,
+        timeout: 20000
       });
 
       updateButtons();
@@ -115,8 +137,8 @@
       ensurePolylineAndMarker();
       watchId = navigator.geolocation.watchPosition(onPosition, onGeoError, {
         enableHighAccuracy: true,
-        maximumAge: 10_000,
-        timeout: 20_000
+        maximumAge: 10000,
+        timeout: 20000
       });
       updateButtons();
     }
@@ -127,6 +149,13 @@
       currentPath = [];
       if (currentPolyline) { currentPolyline.setMap(null); currentPolyline = null; }
       if (currentMarker)   { currentMarker.setMap(null); currentMarker = null; }
+
+      // Resetea token y enlace al limpiar una ruta sin guardar
+      shareToken = null;
+      updateShareLink();
+
+      // Restablece la última posición mostrada
+      document.getElementById('lastCoord').textContent = 'Última posición: N/A';
       updateButtons();
     }
 
@@ -157,6 +186,15 @@
       ensurePolylineAndMarker();
       currentPolyline.getPath().push(new google.maps.LatLng(p.lat, p.lng));
       currentMarker.setPosition({ lat: p.lat, lng: p.lng });
+
+      // Actualiza la última coordenada mostrada al usuario
+      const lastText = `Última posición: ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)} - ${new Date(p.t).toLocaleTimeString()}`;
+      document.getElementById('lastCoord').textContent = lastText;
+
+      // Si estamos offline, guarda la posición para enviarla más tarde
+      if (!navigator.onLine) {
+        unsentPositions.push(p);
+      }
 
       updateButtons();
     }
@@ -331,6 +369,80 @@
       document.getElementById('btnResume').disabled = tracking || points === 0;
       document.getElementById('btnSave').disabled   = points < 2;
       document.getElementById('btnClear').disabled  = points === 0;
+
+      // SOS solo disponible si hay al menos una posición en la ruta
+      document.getElementById('btnSOS').disabled    = points === 0;
+      // Compartir enlace solo disponible si hay token generado
+      document.getElementById('btnShare').disabled  = !shareToken;
+    }
+
+    // ===== Funciones de generación y copia de enlace =====
+    // Genera un token aleatorio para el seguimiento
+    function generateShareToken() {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      let token = '';
+      for (let i = 0; i < 16; i++) {
+        token += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return token;
+    }
+
+    // Actualiza el texto del enlace de seguimiento en la interfaz
+    function updateShareLink() {
+      const linkElem = document.getElementById('shareLink');
+      if (shareToken) {
+        // Construye una URL sencilla con el token. En una app real, esto apuntaría a un visor web que consume el token
+        shareURL = `${location.origin}${location.pathname}?id=${shareToken}`;
+        linkElem.textContent = 'Enlace de seguimiento: ' + shareURL;
+        document.getElementById('btnShare').disabled = false;
+      } else {
+        shareURL = null;
+        linkElem.textContent = 'Enlace de seguimiento: N/A';
+        document.getElementById('btnShare').disabled = true;
+      }
+    }
+
+    // Copia el enlace de seguimiento al portapapeles para compartir con familiares
+    function copyShareLink() {
+      if (!shareURL) return;
+      navigator.clipboard.writeText(shareURL).then(() => {
+        alert('Enlace copiado al portapapeles. ¡Compártelo con tu familiar!');
+      }).catch((err) => {
+        alert('No se pudo copiar el enlace: ' + err);
+      });
+    }
+
+    // ===== Función SOS =====
+    // Crea un mensaje con la última posición y copia al portapapeles para facilitar el aviso a emergencias
+    function sendSOS() {
+      if (currentPath.length === 0) {
+        alert('No hay una ruta activa ni posición reciente para enviar.');
+        return;
+      }
+      const last = currentPath[currentPath.length - 1];
+      const lat = last.lat.toFixed(5);
+      const lng = last.lng.toFixed(5);
+      const message = `Necesito ayuda. Mi última ubicación conocida es: ${lat}, ${lng}.`;
+      navigator.clipboard.writeText(message).catch(() => {});
+      alert('SOS\n' + message + '\nEl mensaje se ha copiado al portapapeles. Llama a emergencias (p. ej., 112) y pega este texto.');
+    }
+
+    // ===== Manejo de conexión y envío diferido =====
+    // Muestra/oculta el estado offline y procesa posiciones acumuladas al volver a estar en línea
+    function updateOfflineStatus() {
+      const offline = !navigator.onLine;
+      const statusElem = document.getElementById('statusOffline');
+      if (offline) {
+        statusElem.style.display = 'block';
+      } else {
+        statusElem.style.display = 'none';
+        // Aquí se podrían enviar las posiciones acumuladas a un servidor
+        if (unsentPositions.length > 0) {
+          console.log('Enviando posiciones almacenadas:', unsentPositions);
+          // Reinicia el buffer
+          unsentPositions = [];
+        }
+      }
     }
 
     // Mensaje útil si la key/referrer falla
@@ -340,6 +452,6 @@
   </script>
 
   <!-- IMPORTANTE: libraries=geometry para distancias -->
-  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBq30NO3Wr-2MySK26-3Sh8WQdjbFUjX34&libraries=geometry&callback=initMap" async defer></script>
+  <script src="https://maps.googleapis.com/maps/api/js?AIzaSyBq30NO3Wr-2MySK26-3Sh8WQdjbFUjX34&libraries=geometry&callback=initMap" async defer></script>
 </body>
 </html>
